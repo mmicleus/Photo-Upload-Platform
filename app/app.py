@@ -1,8 +1,17 @@
 from fastapi import FastAPI,HTTPException
 from app.schemas import PostCreate , PostReturn
+from app.db import Post, create_db_and_tables, get_async_session
+from sqlalchemy.ext.asyncio import AsyncSession
+from contextlib import asynccontextmanager
 
 
-app = FastAPI()
+#this function will run automatically when the application starts and will create the database and tables if they don't exist.
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await create_db_and_tables()
+    yield   
+
+app = FastAPI(lifespan=lifespan)
 
 
 text_posts = {
@@ -29,14 +38,14 @@ def get_all_posts(limit: int = None):
 
 
 @app.get("/posts/{id}")
-def get_post(id: int) -> PostResponse:
+def get_post(id: int) -> PostReturn:
     if id not in text_posts:
         raise HTTPException(status_code=404, detail="Post not found")
     return text_posts.get(id)
 
 
 @app.post("/posts")
-def create_post(post: PostCreate) -> PostResponse:
+def create_post(post: PostCreate) -> PostReturn:
     new_post = {"title": post.title, "content": post.content}
     text_posts[max(text_posts.keys()) + 1] = new_post
 
