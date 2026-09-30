@@ -1,4 +1,5 @@
 from fastapi import FastAPI,HTTPException,File,UploadFile,Form,Depends
+from app.schemas import PostCreate, PostReturn, UserRead, UserCreate, UserUpdate
 from app.schemas import PostCreate , PostReturn
 from app.db import Post, create_db_and_tables, get_async_session
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -6,6 +7,11 @@ from contextlib import asynccontextmanager
 from sqlalchemy import select
 from app.images import imagekit
 from imagekitio.models.UploadFileRequestOptions import UploadFileRequestOptions
+import shutil
+import os
+import uuid
+import tempfile
+from app.users import auth_backend, current_active_user, fastapi_users
 
 #this function will run automatically when the application starts and will create the database and tables if they don't exist.
 @asynccontextmanager
@@ -14,6 +20,19 @@ async def lifespan(app: FastAPI):
     yield   
 
 app = FastAPI(lifespan=lifespan)
+
+
+app.include_router(fastapi_users.get_auth_router(auth_backend),prefix='/auth/jwt',tags=["auth"])
+
+app.include_router(fastapi_users.get_register_router(UserRead, UserCreate), prefix="/auth", tags=["auth"])
+
+app.include_router(fastapi_users.get_reset_password_router(),prefix="/auth", tags=["auth"])
+
+app.include_router(fastapi_users.get_verify_router(UserRead), prefix="/auth", tags=["auth"])
+
+app.include_router(fastapi_users.get_users_router(UserRead,UserUpdate), prefix="/auth", tags=["auth"])
+
+
 
 
 
@@ -25,19 +44,50 @@ async def upload_file(
     caption: str = Form(""),
     session: AsyncSession = Depends(get_async_session)
 ):
-    post = Post(
-        caption=caption,
-        url="dummy url", 
-        fileType="photo",
-        file_name="dummy name" # Replace with actual URL after saving the file
-    )
 
-    #add post to database
-    session.add(post)
-    await session.commit()
-    await session.refresh(post)
+    temp_file_path = None
 
-    return post
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as temp_file:
+            temp_file_path = temp_file.name
+            shutil.copyfileobj(file.file,temp_file)
+
+        upload_result = imagekit.upload_file(
+            file=open(temp_file_path,"rb"),
+            file_name=file.filename,
+            options = UploadFileRequestOptions(
+                use_unique_file_name=True,
+                tags=["backend-upload"]
+            )
+            )
+
+
+        if upload_result.response_metadata.http_status_code == 200:
+            post = Post(
+                    caption=caption,
+                    url=upload_result.url, 
+                    fileType="video" if file.content_type.startswith("video/") else "image",
+                    file_name=upload_result.name # Replace with actual URL after saving the file
+                )
+            
+            #add post to database
+            session.add(post)
+            await session.commit()
+            await session.refresh(post)
+            return post
+
+    except Exception as e:
+        raise HTTPException(status_code=500,detail=str(e))
+    finally:
+        if temp_file_path and os.path.exists(temp_file_path):
+            os.unlink(temp_file_path)
+
+        file.file.close()
+
+
+    
+
+    
 
 
 @app.get("/feed")
@@ -63,59 +113,27 @@ async def get_feed(session: AsyncSession = Depends(get_async_session)):
 
 
 
+@app.delete("/posts/{post_id}")
+async def delete_post(post_id:str, session: AsyncSession = Depends(get_async_session)):
+    try:
+        post_uuid = uuid.UUID(post_id)
+
+        result = await session.execute(select(Post).where(Post.id == post_uuid))
+        post = result.scalars().first()
+
+        if not post:
+            raise HTTPException(status_code=404, detail="Post not found")
 
 
+        await session.delete(post)
+        await session.commit()
 
 
+        return {"success" : True, "message":"Post deleted successfully"}
 
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# @app.get("/posts")
-# def get_all_posts(limit: int = None):
-#     if limit:
-#         return list(text_posts.values())[:limit]
-#     return text_posts
-
-
-# @app.get("/posts/{id}")
-# def get_post(id: int) -> PostReturn:
-#     if id not in text_posts:
-#         raise HTTPException(status_code=404, detail="Post not found")
-#     return text_posts.get(id)
-
-
-# @app.post("/posts")
-# def create_post(post: PostCreate) -> PostReturn:
-#     new_post = {"title": post.title, "content": post.content}
-#     text_posts[max(text_posts.keys()) + 1] = new_post
-
-#     return new_post
-
-
-
-
-
-
+    
 
 
